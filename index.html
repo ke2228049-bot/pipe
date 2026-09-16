@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hand Light</title>
+<title>Body Motion & Halftone</title>
 <style>
   html, body {
     margin: 0;
@@ -14,23 +14,51 @@
     height: 100%;
   }
   video { display: none; }
+  #controls {
+    position: fixed;
+    top: 15px;
+    left: 15px;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 8px 12px;
+    border-radius: 8px;
+    backdrop-filter: blur(4px);
+    font-family: sans-serif;
+  }
+  #controls select {
+    background: #222;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 6px 10px;
+    font-size: 14px;
+    border-radius: 4px;
+    outline: none;
+    cursor: pointer;
+  }
+  #controls select:hover {
+    background: #333;
+  }
 </style>
 </head>
 <body>
 
+<div id="controls">
+  <select id="modeSelect">
+    <option value="A">モードA</option>
+    <option value="B" selected>モードB</option>
+  </select>
+</div>
+
 <video id="cam" playsinline></video>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
 
 <script>
-var MAX_HANDS = 6;
-var MAX_PARTS = 3000;
 var MIRROR = true;
 var CAM_BG = true;
-var SKELETON = false;
-var BG_ALPHA = 0.5;
+var MAX_PARTS = 3000;
 var LIFE_DECAY = 14;
 var SHRINK = 0.94;
 
@@ -43,50 +71,52 @@ var COLORS = [
   [255, 140, 60]
 ];
 
-var TIPS = [4, 8, 12, 16, 20];
-
-// 骨格インデックスを修正（薬指の関節14-15を追加）
-var BONES = [
-  [0,1],[1,2],[2,3],[3,4],
-  [0,5],[5,6],[6,7],[7,8],
-  [5,9],[9,10],[10,11],[11,12],
-  [9,13],[13,14],[14,15],[15,16],
-  [13,17],[17,18],[18,19],[19,20],
-  [0,17]
+var POSE_BONES = [
+  [11, 13], [13, 15], [12, 14], [14, 16],
+  [11, 12], [11, 23], [12, 24], [23, 24],
+  [23, 25], [25, 27], [24, 26], [26, 28],
+  [0, 1], [1, 2], [2, 3], [3, 7],
+  [0, 4], [4, 5], [5, 6], [6, 8]
 ];
 
-let handData = null;
+var KEY_JOINTS = [0, 15, 16, 17, 18, 19, 20, 27, 28, 31, 32];
+
+let poseData = null;
 let camVideo;
 let parts = [];
-let gestureFlags = {};
-let audioUnlocked = false;
+let currentMode = 'B';
 
-const ye = new Audio('ye.mp3');
+let eraseGfx;
+let camGfx;
+let gridStep = 14;
+let eraseTrails = [];
 
-function onHandsResult(res) {
-  handData = res;
+function onPoseResult(res) {
+  poseData = res;
 }
 
 async function initCamera() {
   camVideo = document.getElementById('cam');
 
-  const hands = new Hands({
-    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+  const pose = new Pose({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`
   });
 
-  hands.setOptions({
-    maxNumHands: MAX_HANDS,
+  pose.setOptions({
     modelComplexity: 1,
-    minDetectionConfidence: 0.4,
-    minTrackingConfidence: 0.4
+    smoothLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
   });
 
-  hands.onResults(onHandsResult);
+  pose.onResults(onPoseResult);
 
   const cam = new Camera(camVideo, {
-    onFrame: async () => { await hands.send({ image: camVideo }); },
-    width: 1920,
-    height: 1080
+    onFrame: async () => {
+      await pose.send({ image: camVideo });
+    },
+    width: 1280,
+    height: 720
   });
 
   await cam.start();
@@ -102,98 +132,233 @@ const sketch = (p) => {
     c.style('z-index', '1');
     p.pixelDensity(1);
     p.background(0);
+
+    eraseGfx = p.createGraphics(p.width, p.height);
+    eraseGfx.pixelDensity(1);
+
+    camGfx = p.createGraphics(p.width, p.height);
+    camGfx.pixelDensity(1);
+
+    const select = document.getElementById('modeSelect');
+    select.addEventListener('change', (e) => {
+      currentMode = e.target.value;
+      parts = [];
+      eraseTrails = [];
+    });
   };
 
-  // 画面の初回クリック/タップでブラウザの音声自動再生ブロックを解除
-  p.mousePressed = () => {
-    if (!audioUnlocked) {
-      ye.play().then(() => {
-        ye.pause();
-        ye.currentTime = 0;
-        audioUnlocked = true;
-      }).catch(() => {});
-    }
+  p.windowResized = () => {
+    p.resizeCanvas(p.windowWidth, p.windowHeight);
+    eraseGfx = p.createGraphics(p.width, p.height);
+    eraseGfx.pixelDensity(1);
+    camGfx = p.createGraphics(p.width, p.height);
+    camGfx.pixelDensity(1);
   };
-
-  p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
 
   p.draw = () => {
-    p.noStroke();
-    p.fill(0, 0, 0, 255);
-    p.rect(0, 0, p.width, p.height);
-
-    if (CAM_BG) drawCam(p);
-
-    if (handData && handData.multiHandLandmarks) {
-      const list = handData.multiHandLandmarks;
-
-      for (let h = 0; h < list.length; h++) {
-        const lm = list[h];
-        const col = COLORS[h % COLORS.length];
-
-        let px = 0, py = 0;
-        const palmIdx = [0, 5, 9, 13, 17];
-        for (let k = 0; k < palmIdx.length; k++) {
-          px += lm[palmIdx[k]].x;
-          py += lm[palmIdx[k]].y;
-        }
-        px /= palmIdx.length;
-        py /= palmIdx.length;
-        spawnParticles(p, { x: px, y: py }, col, 2);
-
-        for (let t = 0; t < TIPS.length; t++) {
-          spawnParticles(p, lm[TIPS[t]], col, 3);
-        }
-
-        if (SKELETON) drawBones(p, lm, col);
-
-        const middleUp = isMiddleFingerGesture(lm);
-        if (middleUp && !gestureFlags[h]) {
-          fireMiddleFingerBlast(p, lm, col);
-        }
-        gestureFlags[h] = middleUp;
-      }
+    if (currentMode === 'A') {
+      drawModeA(p);
+    } else {
+      drawModeB(p);
     }
-
-    drawParticles(p);
   };
 };
 
-function fingerUp(lm, tip, pip, wrist) {
-  wrist = wrist || 0;
-  const w = lm[wrist];
-  const dTip = Math.hypot(lm[tip].x - w.x, lm[tip].y - w.y);
-  const dPip = Math.hypot(lm[pip].x - w.x, lm[pip].y - w.y);
-  return dTip > dPip * 1.15;
+function drawModeA(p) {
+  p.noStroke();
+  p.fill(0, 0, 0, 255);
+  p.rect(0, 0, p.width, p.height);
+
+  if (CAM_BG) drawCam(p);
+
+  if (poseData && poseData.poseLandmarks) {
+    const lm = poseData.poseLandmarks;
+    const col = COLORS[0];
+
+    for (let i = 0; i < KEY_JOINTS.length; i++) {
+      const idx = KEY_JOINTS[i];
+      if (lm[idx] && lm[idx].visibility > 0.5) {
+        spawnParticles(p, lm[idx], col, 2);
+      }
+    }
+
+    drawPoseBones(p, lm, col);
+    drawBodyAxis(p, lm);
+  }
+
+  drawParticles(p);
 }
 
-function isMiddleFingerGesture(lm) {
-  const index = fingerUp(lm, 8, 6);
-  const middle = fingerUp(lm, 12, 10);
-  const ring = fingerUp(lm, 16, 14);
-  const pinky = fingerUp(lm, 20, 18);
-  return middle && !index && !ring && !pinky;
+function drawModeB(p) {
+  p.background(240);
+
+  if (!camVideo || camVideo.readyState < 2) return;
+
+  if (poseData && poseData.poseLandmarks) {
+    const lm = poseData.poseLandmarks;
+
+    for (let i = 0; i < KEY_JOINTS.length; i++) {
+      const idx = KEY_JOINTS[i];
+      if (lm[idx] && lm[idx].visibility > 0.4) {
+        const pos = project(p, lm[idx]);
+        eraseTrails.push({
+          x: pos.x,
+          y: pos.y,
+          r: 65,
+          life: 255
+        });
+      }
+    }
+
+    if (lm[11] && lm[12] && lm[23] && lm[24]) {
+      const centerX = (lm[11].x + lm[12].x + lm[23].x + lm[24].x) / 4;
+      const centerY = (lm[11].y + lm[12].y + lm[23].y + lm[24].y) / 4;
+      const centerPos = project(p, { x: centerX, y: centerY });
+      eraseTrails.push({
+        x: centerPos.x,
+        y: centerPos.y,
+        r: 100,
+        life: 255
+      });
+    }
+  }
+
+  eraseGfx.clear();
+  eraseGfx.noStroke();
+  eraseGfx.fill(255);
+
+  for (let i = eraseTrails.length - 1; i >= 0; i--) {
+    let tr = eraseTrails[i];
+    eraseGfx.circle(tr.x, tr.y, tr.r);
+    tr.life -= 7;
+    tr.r *= 0.96;
+    if (tr.life <= 0 || tr.r < 2) {
+      eraseTrails.splice(i, 1);
+    }
+  }
+
+  const vw = camVideo.videoWidth;
+  const vh = camVideo.videoHeight;
+  if (!vw || !vh) return;
+
+  const s = Math.max(p.width / vw, p.height / vh);
+  const dw = vw * s;
+  const dh = vh * s;
+  const dx = (p.width - dw) / 2;
+  const dy = (p.height - dh) / 2;
+
+  camGfx.clear();
+  camGfx.push();
+  if (MIRROR) {
+    camGfx.translate(p.width, 0);
+    camGfx.scale(-1, 1);
+  }
+  camGfx.image(camVideo, dx, dy, dw, dh);
+  camGfx.pop();
+  camGfx.loadPixels();
+
+  eraseGfx.loadPixels();
+
+  p.noStroke();
+
+  for (let y = gridStep / 2; y < p.height; y += gridStep) {
+    for (let x = gridStep / 2; x < p.width; x += gridStep) {
+      let ix = Math.floor(x);
+      let iy = Math.floor(y);
+      let index = (iy * p.width + ix) * 4;
+
+      let r = camGfx.pixels[index];
+      let g = camGfx.pixels[index + 1];
+      let b = camGfx.pixels[index + 2];
+      let bright = (r + g + b) / 3;
+
+      let eraseVal = eraseGfx.pixels[index + 3];
+
+      if (eraseVal > 50) {
+        p.fill(r, g, b);
+        p.circle(x, y, gridStep * 0.95);
+      } else {
+        let radius = p.map(bright, 0, 255, gridStep * 0.85, 1.5);
+        p.fill(20, 20, 20);
+        p.circle(x, y, radius);
+      }
+    }
+  }
+
+  if (poseData && poseData.poseLandmarks) {
+    const lm = poseData.poseLandmarks;
+
+    p.fill(30, 100, 255);
+    p.noStroke();
+    for (let i = 0; i < KEY_JOINTS.length; i++) {
+      const idx = KEY_JOINTS[i];
+      if (lm[idx] && lm[idx].visibility > 0.4) {
+        const pos = project(p, lm[idx]);
+        p.circle(pos.x, pos.y, 8);
+      }
+    }
+
+    drawBodyAxis(p, lm);
+  }
 }
 
-function fireMiddleFingerBlast(p, lm, col) {
-  if (audioUnlocked) {
-    ye.currentTime = 0;
-    ye.play().catch(() => {});
+function drawBodyAxis(p, lm) {
+  if (lm[11] && lm[12] && lm[23] && lm[24] &&
+      lm[11].visibility > 0.5 && lm[12].visibility > 0.5 &&
+      lm[23].visibility > 0.5 && lm[24].visibility > 0.5) {
+
+    const shoulderCenter = {
+      x: (lm[11].x + lm[12].x) / 2,
+      y: (lm[11].y + lm[12].y) / 2
+    };
+
+    const hipCenter = {
+      x: (lm[23].x + lm[24].x) / 2,
+      y: (lm[23].y + lm[24].y) / 2
+    };
+
+    const topPos = project(p, shoulderCenter);
+    const bottomPos = project(p, hipCenter);
+
+    const dx = bottomPos.x - topPos.x;
+    const dy = bottomPos.y - topPos.y;
+    const extTop = { x: topPos.x - dx * 0.8, y: topPos.y - dy * 0.8 };
+    const extBottom = { x: bottomPos.x + dx * 1.2, y: bottomPos.y + dy * 1.2 };
+
+    p.push();
+    p.stroke(255, 50, 50, 200);
+    p.strokeWeight(4);
+    p.line(extTop.x, extTop.y, extBottom.x, extBottom.y);
+
+    const sLeft = project(p, lm[11]);
+    const sRight = project(p, lm[12]);
+    p.stroke(255, 215, 0, 180);
+    p.strokeWeight(2);
+    p.line(sLeft.x, sLeft.y, sRight.x, sRight.y);
+
+    p.fill(255, 255, 255);
+    p.noStroke();
+    p.circle(topPos.x, topPos.y, 10);
+    p.circle(bottomPos.x, bottomPos.y, 10);
+    p.pop();
   }
-  const pos = project(p, lm[12]);
-  for (let i = 0; i < 60; i++) {
-    const ang = p.random(p.TWO_PI);
-    const spd = p.random(2, 40); // 変数の再宣言エラーを解消
-    parts.push({
-      x: pos.x,
-      y: pos.y,
-      vx: Math.cos(ang) * spd,
-      vy: Math.sin(ang) * spd,
-      life: 255,
-      size: p.random(10, 30),
-      col: col
-    });
+}
+
+function drawPoseBones(p, lm, col) {
+  p.blendMode(p.ADD);
+  p.stroke(col[0], col[1], col[2], 120);
+  p.strokeWeight(3);
+  for (let i = 0; i < POSE_BONES.length; i++) {
+    const aIdx = POSE_BONES[i][0];
+    const bIdx = POSE_BONES[i][1];
+    if (lm[aIdx] && lm[bIdx] && lm[aIdx].visibility > 0.4 && lm[bIdx].visibility > 0.4) {
+      const a = project(p, lm[aIdx]);
+      const b = project(p, lm[bIdx]);
+      p.line(a.x, a.y, b.x, b.y);
+    }
   }
+  p.blendMode(p.BLEND);
+  p.noStroke();
 }
 
 function project(p, pt) {
@@ -216,7 +381,7 @@ function drawCam(p) {
 
   const ctx = p.drawingContext;
   ctx.save();
-  ctx.globalAlpha = BG_ALPHA;
+  ctx.globalAlpha = 0.5;
   if (MIRROR) {
     ctx.translate(p.width, 0);
     ctx.scale(-1, 1);
@@ -230,12 +395,12 @@ function spawnParticles(p, pt, col, n) {
   for (let i = 0; i < n; i++) {
     if (parts.length >= MAX_PARTS) parts.shift();
     parts.push({
-      x: pos.x + p.random(-4, 4),
-      y: pos.y + p.random(-4, 4),
-      vx: p.random(-0.6, 0.6),
-      vy: p.random(-1.3, -0.3),
+      x: pos.x + p.random(-6, 6),
+      y: pos.y + p.random(-6, 6),
+      vx: p.random(-0.8, 0.8),
+      vy: p.random(-1.5, -0.3),
       life: 255,
-      size: p.random(6, 22),
+      size: p.random(6, 20),
       col: col
     });
   }
@@ -270,19 +435,6 @@ function drawParticles(p) {
   }
 
   p.blendMode(p.BLEND);
-}
-
-function drawBones(p, lm, col) {
-  p.blendMode(p.ADD);
-  p.stroke(col[0], col[1], col[2], 60);
-  p.strokeWeight(2);
-  for (let i = 0; i < BONES.length; i++) {
-    const a = project(p, lm[BONES[i][0]]);
-    const b = project(p, lm[BONES[i][1]]);
-    p.line(a.x, a.y, b.x, b.y);
-  }
-  p.blendMode(p.BLEND);
-  p.noStroke();
 }
 
 new p5(sketch);
