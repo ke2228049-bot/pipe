@@ -101,12 +101,41 @@ const ye = new Audio('ye.mp3');
 // ---- モード管理 ----
 let currentMode = 'A';
 
-// ---- モードB用（全身ドットエフェクト）----
+// ---- モードB用（人が通った場所からドットが押し出されるエフェクト）----
 const SAMPLE_COLS = 72;
 const SAMPLE_ROWS = 48;
 let sampleCanvas, sampleCtx;
-let bSparkles = [];
-const MAX_B_SPARKLES = 400;
+
+let bBgAvg = null;      // 各セルの明るさのゆっくり追従する平均（背景）
+let bOcc = null;        // 各セルの「人がいる度合い」0〜1
+let bDots = null;       // 各セルに対応する点のオフセット・速度
+let bInitialized = false;
+
+const B_BG_RATE = 0.02;     // 背景が現在の映像に追従する速さ（小さいほど余韻が長い）
+const B_DIFF_THRESH = 14;   // これ以上の差分から「人がいる」と判定し始める
+const B_DIFF_RANGE = 60;    // この差分で占有度が最大(1.0)になる
+const B_PUSH_GAIN = 2.4;    // 押し出す力の強さ
+const B_SPRING = 0.06;      // 元の位置へ戻すばねの強さ
+const B_DAMPING = 0.82;     // 速度の減衰（大きいほどよく揺れる）
+const B_MAX_OFFSET = 46;    // 押し出される最大距離（px）
+
+function initBState() {
+  const n = SAMPLE_COLS * SAMPLE_ROWS;
+  bBgAvg = new Float32Array(n);
+  bOcc = new Float32Array(n);
+  bDots = new Array(n);
+  for (let k = 0; k < n; k++) bDots[k] = { ox: 0, oy: 0, vx: 0, vy: 0 };
+  bInitialized = false;
+}
+
+function resetBState() {
+  bInitialized = false;
+  if (bDots) {
+    for (let k = 0; k < bDots.length; k++) {
+      bDots[k].ox = 0; bDots[k].oy = 0; bDots[k].vx = 0; bDots[k].vy = 0;
+    }
+  }
+}
 
 function setupModeSelect() {
   const sel = document.getElementById('modeSelect');
@@ -115,8 +144,8 @@ function setupModeSelect() {
     currentMode = sel.value;
     // モード切替時にエフェクトの残留物をリセット
     parts = [];
-    bSparkles = [];
     gestureFlags = {};
+    resetBState();
   });
 }
 
@@ -165,6 +194,7 @@ const sketch = (p) => {
     sampleCanvas.height = SAMPLE_ROWS;
     sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
 
+    initBState();
     setupModeSelect();
   };
 
@@ -239,19 +269,16 @@ function drawModeA(p) {
 }
 
 // =====================================================
-// モード B：全身版のハーフトーン・ドットエフェクト
+// モード B：格子状のドットが「人が通った場所」から押し出されるエフェクト
 // =====================================================
 function drawModeB(p) {
   p.noStroke();
   p.fill(0, 0, 0, 255);
   p.rect(0, 0, p.width, p.height);
 
-  if (!camVideo || camVideo.readyState < 2 || !camVideo.videoWidth) {
-    drawBMesh(p);
-    return;
-  }
+  if (!camVideo || camVideo.readyState < 2 || !camVideo.videoWidth) return;
 
-  // 低解像度キャンバスに映像を焼き込み、各セルの代表色を取得する
+  // 低解像度キャンバスに映像を焼き込み、各セルの色と明るさを取得する
   sampleCtx.save();
   if (MIRROR) {
     sampleCtx.translate(SAMPLE_COLS, 0);
@@ -261,7 +288,6 @@ function drawModeB(p) {
     sampleCtx.drawImage(camVideo, 0, 0, SAMPLE_COLS, SAMPLE_ROWS);
   } catch (e) {
     sampleCtx.restore();
-    drawBMesh(p);
     return;
   }
   sampleCtx.restore();
@@ -270,78 +296,90 @@ function drawModeB(p) {
   try {
     data = sampleCtx.getImageData(0, 0, SAMPLE_COLS, SAMPLE_ROWS).data;
   } catch (e) {
-    drawBMesh(p);
     return;
   }
 
-  const cellW = p.width / SAMPLE_COLS;
-  const cellH = p.height / SAMPLE_ROWS;
+  const cols = SAMPLE_COLS, rows = SAMPLE_ROWS;
+  const cellW = p.width / cols;
+  const cellH = p.height / rows;
 
-  // 1) 背景全体を覆う細かいドットメッシュ（スクリーントーン風）
-  drawBMesh(p);
+  // 1) ゆっくり追従する「背景の明るさ」との差分から、各セルの占有度（人がいる度合い）を更新
+  for (let idx = 0, j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++, idx++) {
+      const o = idx * 4;
+      const lum = (data[o] + data[o + 1] + data[o + 2]) / 3;
 
-  // 2) 映像の色・明るさに応じた粒（人物のシルエットを覆う塊）
+      if (!bInitialized) {
+        bBgAvg[idx] = lum;
+      } else {
+        bBgAvg[idx] += (lum - bBgAvg[idx]) * B_BG_RATE;
+      }
+
+      const diff = Math.abs(lum - bBgAvg[idx]);
+      let occ = (diff - B_DIFF_THRESH) / B_DIFF_RANGE;
+      if (occ < 0) occ = 0;
+      if (occ > 1) occ = 1;
+      bOcc[idx] = occ;
+    }
+  }
+  bInitialized = true;
+
+  // 2) 占有度の勾配から「押し出す力」を計算し、各点をばね物理で更新
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const idx = j * cols + i;
+      const dot = bDots[idx];
+
+      let fx = 0, fy = 0;
+      if (i > 0 && i < cols - 1) {
+        fx = -(bOcc[idx + 1] - bOcc[idx - 1]) * 0.5;
+      }
+      if (j > 0 && j < rows - 1) {
+        fy = -(bOcc[idx + cols] - bOcc[idx - cols]) * 0.5;
+      }
+      const occHere = bOcc[idx];
+      const push = B_PUSH_GAIN * (0.3 + occHere);
+
+      dot.vx += fx * push * cellW;
+      dot.vy += fy * push * cellH;
+
+      // 元の格子位置へ戻すばね
+      dot.vx += -dot.ox * B_SPRING;
+      dot.vy += -dot.oy * B_SPRING;
+
+      dot.vx *= B_DAMPING;
+      dot.vy *= B_DAMPING;
+
+      dot.ox += dot.vx;
+      dot.oy += dot.vy;
+
+      if (dot.ox > B_MAX_OFFSET) dot.ox = B_MAX_OFFSET;
+      if (dot.ox < -B_MAX_OFFSET) dot.ox = -B_MAX_OFFSET;
+      if (dot.oy > B_MAX_OFFSET) dot.oy = B_MAX_OFFSET;
+      if (dot.oy < -B_MAX_OFFSET) dot.oy = -B_MAX_OFFSET;
+    }
+  }
+
+  // 3) 押し出された位置に、映像の色を乗せた点を描画
   p.noStroke();
-  for (let j = 0; j < SAMPLE_ROWS; j++) {
-    for (let i = 0; i < SAMPLE_COLS; i++) {
-      const idx = (j * SAMPLE_COLS + i) * 4;
-      const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-      const bright = (r + g + b) / 3;
-      const norm = bright / 255;
+  const baseR = Math.max(cellW, cellH) * 0.95;
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const idx = j * cols + i;
+      const o = idx * 4;
+      const r = data[o], g = data[o + 1], b = data[o + 2];
+      const dot = bDots[idx];
 
-      // 完全な黒背景っぽい部分は間引いてメッシュを透かす
-      if (norm < 0.05 && p.random() < 0.85) continue;
+      const hx = i * cellW + cellW / 2;
+      const hy = j * cellH + cellH / 2;
+      const x = hx + dot.ox;
+      const y = hy + dot.oy;
 
-      const cx = i * cellW + cellW / 2 + p.random(-cellW * 0.15, cellW * 0.15);
-      const cy = j * cellH + cellH / 2 + p.random(-cellH * 0.15, cellH * 0.15);
-      const radius = p.map(norm, 0, 1, cellW * 0.35, cellW * 1.5);
+      const occHere = bOcc[idx];
+      const rad = baseR * (0.7 + occHere * 0.5);
 
       p.fill(r, g, b, 235);
-      p.circle(cx, cy, radius);
-
-      // 明るい/シルエット境界にキラキラのアクセントを稀に発生
-      if (norm > 0.55 && p.random() < 0.012 && bSparkles.length < MAX_B_SPARKLES) {
-        bSparkles.push({
-          x: cx + p.random(-cellW, cellW),
-          y: cy + p.random(-cellH, cellH),
-          vy: p.random(-0.6, -0.15),
-          life: 255,
-          size: p.random(6, 18),
-          col: COLORS[Math.floor(p.random(COLORS.length))]
-        });
-      }
-    }
-  }
-
-  // 3) アクセントの光る粒子
-  p.blendMode(p.ADD);
-  for (let k = bSparkles.length - 1; k >= 0; k--) {
-    const s = bSparkles[k];
-    s.life -= 5;
-    s.y += s.vy;
-    if (s.life <= 0) {
-      bSparkles.splice(k, 1);
-      continue;
-    }
-    const a = p.map(s.life, 0, 255, 0, 220);
-    const c = s.col;
-    p.fill(c[0], c[1], c[2], a * 0.5);
-    p.circle(s.x, s.y, s.size * 1.8);
-    p.fill(255, 255, 255, a * 0.6);
-    p.circle(s.x, s.y, s.size * 0.4);
-    p.fill(c[0], c[1], c[2], a);
-    p.circle(s.x, s.y, s.size);
-  }
-  p.blendMode(p.BLEND);
-}
-
-function drawBMesh(p) {
-  p.noStroke();
-  p.fill(0, 0, 0, 255);
-  const gap = Math.max(9, Math.min(p.width, p.height) / 90);
-  for (let y = gap / 2; y < p.height; y += gap) {
-    for (let x = gap / 2; x < p.width; x += gap) {
-      p.circle(x, y, 2.6);
+      p.circle(x, y, rad);
     }
   }
 }
