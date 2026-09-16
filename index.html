@@ -14,40 +14,9 @@
     height: 100%;
   }
   video { display: none; }
-  #controls {
-    position: fixed;
-    top: 15px;
-    left: 15px;
-    z-index: 10;
-    background: rgba(0, 0, 0, 0.6);
-    padding: 8px 12px;
-    border-radius: 8px;
-    backdrop-filter: blur(4px);
-    font-family: sans-serif;
-  }
-  #controls select {
-    background: #222;
-    color: #fff;
-    border: 1px solid #555;
-    padding: 6px 10px;
-    font-size: 14px;
-    border-radius: 4px;
-    outline: none;
-    cursor: pointer;
-  }
-  #controls select:hover {
-    background: #333;
-  }
 </style>
 </head>
 <body>
-
-<div id="controls">
-  <select id="modeSelect">
-    <option value="A">モードA</option>
-    <option value="B" selected>モードB</option>
-  </select>
-</div>
 
 <video id="cam" playsinline muted autoplay></video>
 
@@ -57,34 +26,11 @@
 
 <script>
 var MIRROR = true;
-var CAM_BG = true;
-var MAX_PARTS = 3000;
-var LIFE_DECAY = 14;
-var SHRINK = 0.94;
-
-var COLORS = [
-  [80, 200, 255],
-  [255, 110, 200],
-  [255, 210, 60],
-  [120, 255, 140],
-  [190, 120, 255],
-  [255, 140, 60]
-];
-
-var POSE_BONES = [
-  [11, 13], [13, 15], [12, 14], [14, 16],
-  [11, 12], [11, 23], [12, 24], [23, 24],
-  [23, 25], [25, 27], [24, 26], [26, 28],
-  [0, 1], [1, 2], [2, 3], [3, 7],
-  [0, 4], [4, 5], [5, 6], [6, 8]
-];
 
 var KEY_JOINTS = [0, 15, 16, 17, 18, 19, 20, 27, 28, 31, 32];
 
 let poseData = null;
 let camVideo;
-let parts = [];
-let currentMode = 'B';
 
 let eraseGfx;
 let camGfx;
@@ -181,13 +127,6 @@ const sketch = (p) => {
     camGfx = p.createGraphics(p.width, p.height);
     camGfx.pixelDensity(1);
 
-    const select = document.getElementById('modeSelect');
-    select.addEventListener('change', (e) => {
-      currentMode = e.target.value;
-      parts = [];
-      eraseTrails = [];
-    });
-
     initCamera();
   };
 
@@ -201,40 +140,11 @@ const sketch = (p) => {
 
   p.draw = () => {
     updateStatus();
-    if (currentMode === 'A') {
-      drawModeA(p);
-    } else {
-      drawModeB(p);
-    }
+    drawHalftone(p);
   };
 };
 
-function drawModeA(p) {
-  p.noStroke();
-  p.fill(0, 0, 0, 255);
-  p.rect(0, 0, p.width, p.height);
-
-  if (CAM_BG) drawCam(p);
-
-  if (poseData && poseData.poseLandmarks) {
-    const lm = poseData.poseLandmarks;
-    const col = COLORS[0];
-
-    for (let i = 0; i < KEY_JOINTS.length; i++) {
-      const idx = KEY_JOINTS[i];
-      if (lm[idx] && lm[idx].visibility > 0.5) {
-        spawnParticles(p, lm[idx], col, 2);
-      }
-    }
-
-    drawPoseBones(p, lm, col);
-    drawBodyAxis(p, lm);
-  }
-
-  drawParticles(p);
-}
-
-function drawModeB(p) {
+function drawHalftone(p) {
   p.background(240);
 
   if (!camVideo || camVideo.readyState < 2) return;
@@ -389,97 +299,10 @@ function drawBodyAxis(p, lm) {
   }
 }
 
-function drawPoseBones(p, lm, col) {
-  p.blendMode(p.ADD);
-  p.stroke(col[0], col[1], col[2], 120);
-  p.strokeWeight(3);
-  for (let i = 0; i < POSE_BONES.length; i++) {
-    const aIdx = POSE_BONES[i][0];
-    const bIdx = POSE_BONES[i][1];
-    if (lm[aIdx] && lm[bIdx] && lm[aIdx].visibility > 0.4 && lm[bIdx].visibility > 0.4) {
-      const a = project(p, lm[aIdx]);
-      const b = project(p, lm[bIdx]);
-      p.line(a.x, a.y, b.x, b.y);
-    }
-  }
-  p.blendMode(p.BLEND);
-  p.noStroke();
-}
-
 function project(p, pt) {
   const x = MIRROR ? (1 - pt.x) * p.width : pt.x * p.width;
   const y = pt.y * p.height;
   return { x: x, y: y };
-}
-
-function drawCam(p) {
-  if (!camVideo || camVideo.readyState < 2) return;
-  const vw = camVideo.videoWidth;
-  const vh = camVideo.videoHeight;
-  if (!vw || !vh) return;
-
-  const s = Math.max(p.width / vw, p.height / vh);
-  const dw = vw * s;
-  const dh = vh * s;
-  const dx = (p.width - dw) / 2;
-  const dy = (p.height - dh) / 2;
-
-  const ctx = p.drawingContext;
-  ctx.save();
-  ctx.globalAlpha = 0.5;
-  if (MIRROR) {
-    ctx.translate(p.width, 0);
-    ctx.scale(-1, 1);
-  }
-  ctx.drawImage(camVideo, dx, dy, dw, dh);
-  ctx.restore();
-}
-
-function spawnParticles(p, pt, col, n) {
-  const pos = project(p, pt);
-  for (let i = 0; i < n; i++) {
-    if (parts.length >= MAX_PARTS) parts.shift();
-    parts.push({
-      x: pos.x + p.random(-6, 6),
-      y: pos.y + p.random(-6, 6),
-      vx: p.random(-0.8, 0.8),
-      vy: p.random(-1.5, -0.3),
-      life: 255,
-      size: p.random(6, 20),
-      col: col
-    });
-  }
-}
-
-function drawParticles(p) {
-  p.blendMode(p.ADD);
-  p.noStroke();
-
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const pt = parts[i];
-    pt.x += pt.vx;
-    pt.y += pt.vy;
-    pt.vy -= 0.01;
-    pt.life -= LIFE_DECAY;
-    pt.size *= SHRINK;
-
-    if (pt.life <= 0 || pt.size < 0.5) {
-      parts.splice(i, 1);
-      continue;
-    }
-
-    const a = p.map(pt.life, 0, 255, 0, 180);
-    const c = pt.col;
-
-    p.fill(c[0], c[1], c[2], a * 0.25);
-    p.circle(pt.x, pt.y, pt.size * 2.4);
-    p.fill(255, 255, 255, a * 0.5);
-    p.circle(pt.x, pt.y, pt.size * 0.6);
-    p.fill(c[0], c[1], c[2], a);
-    p.circle(pt.x, pt.y, pt.size);
-  }
-
-  p.blendMode(p.BLEND);
 }
 
 new p5(sketch);
