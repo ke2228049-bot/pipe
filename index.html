@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Hand Light</title>
 <style>
 html,body{margin:0;padding:0;overflow:hidden;background:#000;width:100%;height:100%}
@@ -18,7 +18,7 @@ video{display:none}
 <select id="modeSelect">
 <option value="A">モード A</option>
 <option value="B">モード B（全身）</option>
-<option value="C">モード C（レーザー）</option>
+<option value="C">モード C（色反転）</option>
 </select>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
@@ -65,9 +65,8 @@ const B_SPRING=.06;
 const B_DAMPING=.82;
 const B_MAX_OFFSET=46;
 
-let lasers=[];
-const LASER_LIFE=90;
-const LASER_LENGTH=1.8;
+let cQuad=null;
+let cQuadSmooth=null;
 
 function initBState(){
 const n=SAMPLE_COLS*SAMPLE_ROWS;
@@ -96,11 +95,12 @@ sel.value=currentMode;
 sel.addEventListener('change',()=>{
 currentMode=sel.value;
 parts=[];
-lasers=[];
 gestureFlags={};
-resetBState();
 clapCooldown=0;
 previousPalmDistance=null;
+cQuad=null;
+cQuadSmooth=null;
+resetBState();
 });
 }
 
@@ -144,12 +144,17 @@ audioUnlocked=true;
 };
 p.windowResized=()=>p.resizeCanvas(p.windowWidth,p.windowHeight);
 p.draw=()=>{
-if(currentMode==='C'){drawModeC(p);return}
-if(currentMode==='B'){drawModeB(p);return}
+if(currentMode==='C'){
+drawModeC(p);
+return;
+}
+if(currentMode==='B'){
+drawModeB(p);
+return;
+}
 drawModeA(p);
 };
 };
-
 new p5(sketch);
 initCamera();
 
@@ -330,77 +335,165 @@ p.circle(x,y,rad);
 
 function drawModeC(p){
 p.noStroke();
-p.fill(0,0,0,255);
-p.rect(0,0,p.width,p.height);
-if(CAM_BG)drawCam(p);
-if(handData&&handData.multiHandLandmarks){
-const list=handData.multiHandLandmarks;
-for(let h=0;h<list.length;h++){
-const lm=list[h];
-const col=COLORS[h%COLORS.length];
-const indexUp=fingerUp(lm,8,6);
-if(indexUp)updateLaser(p,lm,col,h);
-}
-}
-drawLasers(p);
+p.background(0);
+if(!camVideo||camVideo.readyState<2)return;
+drawCam(p);
+const quad=getCQuad(p);
+if(!quad)return;
+drawInvertedQuad(p,quad);
+drawQuadFrame(p,quad);
 }
 
-function updateLaser(p,lm,col,handIndex){
-const tip=project(p,lm[8]);
-const pip=project(p,lm[6]);
-let dx=tip.x-pip.x;
-let dy=tip.y-pip.y;
-const len=Math.sqrt(dx*dx+dy*dy);
-if(len<1)return;
-dx/=len;
-dy/=len;
-const endX=tip.x+dx*p.width*LASER_LENGTH;
-const endY=tip.y+dy*p.width*LASER_LENGTH;
-let laser=lasers.find(l=>l.handIndex===handIndex);
-if(!laser){
-laser={handIndex:handIndex,x1:tip.x,y1:tip.y,x2:endX,y2:endY,col:col,life:90};
-lasers.push(laser);
+function getCQuad(p){
+if(!handData||!handData.multiHandLandmarks||handData.multiHandLandmarks.length<2){
+cQuad=null;
+cQuadSmooth=null;
+return null;
+}
+const hands=handData.multiHandLandmarks;
+const points=[];
+for(let h=0;h<Math.min(2,hands.length);h++){
+const lm=hands[h];
+points.push(project(p,lm[4]));
+points.push(project(p,lm[8]));
+}
+if(points.length!==4)return null;
+const hull=convexHull(points);
+if(hull.length!==4)return null;
+if(!cQuadSmooth){
+cQuadSmooth=hull.map(q=>({x:q.x,y:q.y}));
 }else{
-laser.x1+=(tip.x-laser.x1)*.55;
-laser.y1+=(tip.y-laser.y1)*.55;
-laser.x2+=(endX-laser.x2)*.55;
-laser.y2+=(endY-laser.y2)*.55;
-laser.col=col;
-laser.life=90;
+cQuadSmooth=matchQuadPoints(cQuadSmooth,hull);
+for(let i=0;i<4;i++){
+cQuadSmooth[i].x+=(hull[i].x-cQuadSmooth[i].x)*.35;
+cQuadSmooth[i].y+=(hull[i].y-cQuadSmooth[i].y)*.35;
 }
+}
+cQuad=cQuadSmooth;
+return cQuad;
 }
 
-function drawLasers(p){
-p.push();
-p.blendMode(p.ADD);
-for(let i=lasers.length-1;i>=0;i--){
-const laser=lasers[i];
-laser.life--;
-if(laser.life<=0){
-lasers.splice(i,1);
-continue;
+function convexHull(points){
+const pts=points.slice().sort((a,b)=>a.x===b.x?a.y-b.y:a.x-b.x);
+if(pts.length<=1)return pts;
+const cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
+const lower=[];
+for(let i=0;i<pts.length;i++){
+while(lower.length>=2&&cross(lower[lower.length-2],lower[lower.length-1],pts[i])<=0)lower.pop();
+lower.push(pts[i]);
 }
-const c=laser.col;
-p.stroke(c[0],c[1],c[2],25);
-p.strokeWeight(24);
-p.line(laser.x1,laser.y1,laser.x2,laser.y2);
-p.stroke(c[0],c[1],c[2],70);
-p.strokeWeight(10);
-p.line(laser.x1,laser.y1,laser.x2,laser.y2);
-p.stroke(c[0],c[1],c[2],240);
-p.strokeWeight(4);
-p.line(laser.x1,laser.y1,laser.x2,laser.y2);
-p.stroke(255,255,255,230);
-p.strokeWeight(1.5);
-p.line(laser.x1,laser.y1,laser.x2,laser.y2);
-p.noStroke();
-p.fill(255,255,255,220);
-p.circle(laser.x1,laser.y1,14);
-p.fill(c[0],c[1],c[2],180);
-p.circle(laser.x1,laser.y1,28);
+const upper=[];
+for(let i=pts.length-1;i>=0;i--){
+while(upper.length>=2&&cross(upper[upper.length-2],upper[upper.length-1],pts[i])<=0)upper.pop();
+upper.push(pts[i]);
 }
-p.blendMode(p.BLEND);
-p.pop();
+lower.pop();
+upper.pop();
+return lower.concat(upper);
+}
+
+function matchQuadPoints(oldPts,newPts){
+if(oldPts.length!==4)return newPts;
+let best=null;
+let bestScore=Infinity;
+const perms=[
+[0,1,2,3],[0,3,2,1],[1,0,3,2],[1,2,3,0],
+[2,1,0,3],[2,3,0,1],[3,0,1,2],[3,2,1,0]
+];
+for(let k=0;k<perms.length;k++){
+let score=0;
+for(let i=0;i<4;i++){
+const a=oldPts[i];
+const b=newPts[perms[k][i]];
+score+=(a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y);
+}
+if(score<bestScore){
+bestScore=score;
+best=perms[k];
+}
+}
+return best.map(i=>({x:newPts[i].x,y:newPts[i].y}));
+}
+
+function drawInvertedQuad(p,q){
+const ctx=p.drawingContext;
+const vw=camVideo.videoWidth;
+const vh=camVideo.videoHeight;
+const s=Math.max(p.width/vw,p.height/vh);
+const dw=vw*s;
+const dh=vh*s;
+const dx=(p.width-dw)/2;
+const dy=(p.height-dh)/2;
+ctx.save();
+ctx.beginPath();
+ctx.moveTo(q[0].x,q[0].y);
+ctx.lineTo(q[1].x,q[1].y);
+ctx.lineTo(q[2].x,q[2].y);
+ctx.lineTo(q[3].x,q[3].y);
+ctx.closePath();
+ctx.clip();
+ctx.filter='invert(1)';
+if(MIRROR){
+ctx.translate(p.width,0);
+ctx.scale(-1,1);
+ctx.drawImage(camVideo,dx,dy,dw,dh);
+}else{
+ctx.drawImage(camVideo,dx,dy,dw,dh);
+}
+ctx.filter='none';
+ctx.restore();
+}
+
+function drawQuadFrame(p,q){
+const ctx=p.drawingContext;
+ctx.save();
+ctx.globalCompositeOperation='lighter';
+ctx.lineJoin='round';
+ctx.lineCap='round';
+ctx.beginPath();
+ctx.moveTo(q[0].x,q[0].y);
+ctx.lineTo(q[1].x,q[1].y);
+ctx.lineTo(q[2].x,q[2].y);
+ctx.lineTo(q[3].x,q[3].y);
+ctx.closePath();
+ctx.strokeStyle='rgba(0,180,255,.18)';
+ctx.lineWidth=18;
+ctx.stroke();
+ctx.beginPath();
+ctx.moveTo(q[0].x,q[0].y);
+ctx.lineTo(q[1].x,q[1].y);
+ctx.lineTo(q[2].x,q[2].y);
+ctx.lineTo(q[3].x,q[3].y);
+ctx.closePath();
+ctx.strokeStyle='rgba(0,120,255,.45)';
+ctx.lineWidth=8;
+ctx.stroke();
+ctx.beginPath();
+ctx.moveTo(q[0].x,q[0].y);
+ctx.lineTo(q[1].x,q[1].y);
+ctx.lineTo(q[2].x,q[2].y);
+ctx.lineTo(q[3].x,q[3].y);
+ctx.closePath();
+ctx.strokeStyle='rgba(20,220,255,1)';
+ctx.lineWidth=3;
+ctx.stroke();
+for(let i=0;i<4;i++){
+const x=q[i].x;
+const y=q[i].y;
+ctx.beginPath();
+ctx.arc(x,y,20,0,Math.PI*2);
+ctx.fillStyle='rgba(0,150,255,.18)';
+ctx.fill();
+ctx.beginPath();
+ctx.arc(x,y,11,0,Math.PI*2);
+ctx.fillStyle='rgba(120,240,255,.8)';
+ctx.fill();
+ctx.beginPath();
+ctx.arc(x,y,7,0,Math.PI*2);
+ctx.fillStyle='rgba(255,255,255,1)';
+ctx.fill();
+}
+ctx.restore();
 }
 
 function fingerUp(lm,tip,pip,wrist){
