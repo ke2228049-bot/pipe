@@ -44,8 +44,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sa
 <div id="topBar">
 <select id="modeSelect" aria-label="モード">
 <option value="A">モード A</option>
-<option value="B">モード B（全身）</option>
-<option value="C">モード C（色反転）</option>
+<option value="B">モード B</option>
+<option value="C">モード C</option>
 </select>
 <button id="helpBtn" type="button">使い方</button>
 </div>
@@ -62,21 +62,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sa
 <p>手を映すと、手のひらと指先から光の粒があふれます。最大6つの手まで認識します。</p>
 <ul>
 <li>両手をぱんと合わせる：赤とオレンジの光が大きく弾けます</li>
-<li>中指だけを立てる：指先から光が飛び散ります</li>
 </ul>
 </section>
 
 <section class="mode mB">
-<h2>モード B（全身）：体で点を押しのける</h2>
+<h2>モード B：体で点を押しのける</h2>
 <p>映像が小さな丸の集まりに変わります。カメラの前で体や手を動かすと、動いた場所の丸が押しのけられて揺れます。じっとしていると背景として覚えられるので、大きく動いてみてください。</p>
 </section>
 
 <section class="mode mC">
 <h2>モード C：指で四角形をつくる</h2>
 <p>両手をカメラに映し、親指と人差し指の先（合計4か所）で四角形をつくります。青く光る枠の内側だけ、映像の色が反転します。手を動かすと枠も追いかけます。</p>
-</section>
-
-<p class="note">カメラの使用を許可してください。映像は端末の中だけで処理され、外部には送信されません。拍手や指のジェスチャーで音が鳴るので、音量にご注意ください。</p>
 <button id="introStart" type="button">はじめる</button>
 </div>
 </div>
@@ -106,7 +102,7 @@ let currentMode='A';
 
 /* ---- 遊び方・ヒント用 ---- */
 const MODE_HINTS={
-  A:'手を映すと光が出ます。両手で拍手、または中指だけを立てると弾けます',
+  A:'手を映すと光が出ます。両手で拍手すると弾けます',
   B:'体や手を動かすと、丸い点が押しのけられます',
   C:'両手の親指と人差し指で四角形をつくると、内側の色が反転します'
 };
@@ -171,7 +167,6 @@ function resetBState(){
   }
 }
 
-/* ---- 音のロック解除（ユーザー操作が必要） ---- */
 function unlockAudio(){
   if(audioUnlocked)return;
   ye.play().then(()=>{
@@ -181,7 +176,6 @@ function unlockAudio(){
   }).catch(()=>{});
 }
 
-/* ---- 画面下のヒント ---- */
 function showHint(msg,ms){
   const el=document.getElementById('hint');
   el.textContent=msg;
@@ -220,7 +214,6 @@ function updateHint(){
   }
 }
 
-/* ---- 遊び方パネル ---- */
 function openIntro(){
   const btn=document.getElementById('introStart');
   btn.textContent=introSeen?'閉じる':'はじめる';
@@ -289,7 +282,7 @@ async function initCamera(){
     await cam.start();
     cameraReady=true;
   }catch(e){
-    camError='カメラを使えませんでした。ブラウザのカメラ許可を確認し、https または localhost で開いてください';
+    camError='カメラを使えませんでした。ブラウザのカメラ許可を確認してください';
   }
 }
 
@@ -373,9 +366,8 @@ function detectClap(p,list){
   const b=getPalmCenter(list[1]);
   const dx=a.x-b.x;
   const dy=a.y-b.y;
-  const rawDistance=Math.hypot(dx,dy);
-
-  /* MediaPipeのフレームごとの揺れを吸収する */
+  const rawDistance=Math.hypot(dx,
+                               
   if(palmDistanceSmooth===null){
     palmDistanceSmooth=rawDistance;
   }else{
