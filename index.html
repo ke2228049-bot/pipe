@@ -366,7 +366,7 @@ function detectClap(p,list){
   const b=getPalmCenter(list[1]);
   const dx=a.x-b.x;
   const dy=a.y-b.y;
-  const rawDistance=Math.hypot(dx,
+  const rawDistance=Math.hypot(dx,dy);
                                
   if(palmDistanceSmooth===null){
     palmDistanceSmooth=rawDistance;
@@ -376,7 +376,7 @@ function detectClap(p,list){
 
   const distance=palmDistanceSmooth;
 
-  /* 一度十分離れた状態を作ってから、近づいてきた時だけ「拍手」とする */
+ 
   if(distance>CLAP_ARM_DISTANCE){
     clapArmed=true;
   }
@@ -552,8 +552,7 @@ function getCQuad(p){
     points.push(project(p,lm[8]));
   }
   if(points.length!==4)return null;
-  /* 4点を重心まわりの角度で並べて四角形にする。
-     凸包だと1点が内側に入った時に3点になり反転が消えてしまうため、常に4点の多角形を返す */
+ 
   const hull=orderQuadPoints(points);
   if(!cQuadSmooth){
     cQuadSmooth=hull.map(q=>({x:q.x,y:q.y}));
@@ -621,7 +620,6 @@ function drawInvertedQuad(p,q){
   ctx.closePath();
   ctx.clip();
   ctx.globalAlpha=1;
-  /* 範囲内に明るさそのままの映像を描く */
   ctx.save();
   if(MIRROR){
     ctx.translate(p.width,0);
@@ -629,8 +627,7 @@ function drawInvertedQuad(p,q){
   }
   ctx.drawImage(camVideo,dx,dy,dw,dh);
   ctx.restore();
-  /* 白を「差の絶対値」で重ねると 255 - 元の色 になり、色が反転する。
-     ctx.filter='invert(1)' はSafari(iPhone含む)で効かないので、この方法を使う */
+  
   ctx.globalCompositeOperation='difference';
   ctx.fillStyle='#ffffff';
   ctx.fillRect(0,0,p.width,p.height);
